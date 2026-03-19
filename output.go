@@ -30,72 +30,158 @@ type FileSet struct {
 	Manifest string `json:"manifest"`
 }
 
-func writeMonthOutput(cfg Config, month MonthRange, slackRecords []SlackConversationRecord, githubRecords []GitHubCommitRecord) (MonthResult, error) {
-	monthDir := filepath.Join(cfg.OutputDir, month.Label)
-	if err := os.MkdirAll(monthDir, 0o755); err != nil {
-		return MonthResult{}, err
-	}
+type MonthWriter struct {
+	cfg          Config
+	month        MonthRange
+	monthDir     string
+	slackPath    string
+	githubPath   string
+	manifestPath string
+	generatedAt  time.Time
 
-	slackPath := filepath.Join(monthDir, "slack.jsonl")
-	githubPath := filepath.Join(monthDir, "github.jsonl")
-	manifestPath := filepath.Join(monthDir, "manifest.json")
-
-	if err := writeJSONL(slackPath, slackRecords); err != nil {
-		return MonthResult{}, err
-	}
-	if err := writeJSONL(githubPath, githubRecords); err != nil {
-		return MonthResult{}, err
-	}
-
-	generatedAt := time.Now().UTC()
-	manifest := MonthManifest{
-		Month:              month.Label,
-		GeneratedAt:        generatedAt.Format(time.RFC3339),
-		OutputDir:          monthDir,
-		SlackRecordCount:   len(slackRecords),
-		GitHubCommitCount:  len(githubRecords),
-		Repos:              append([]string(nil), cfg.Repos...),
-		SlackUserHandle:    cfg.SlackUserHandle,
-		GitHubUserHandle:   cfg.GitHubUser,
-		ConfiguredTimeFrom: cfg.TimeFrom.Format(time.RFC3339),
-		ConfiguredTimeTo:   cfg.TimeTo.Format(time.RFC3339),
-		Files: FileSet{
-			Slack:    slackPath,
-			GitHub:   githubPath,
-			Manifest: manifestPath,
-		},
-	}
-	if err := writeJSONFile(manifestPath, manifest); err != nil {
-		return MonthResult{}, err
-	}
-
-	return MonthResult{
-		Month:        month.Label,
-		SlackCount:   len(slackRecords),
-		GitHubCount:  len(githubRecords),
-		SlackPath:    slackPath,
-		GitHubPath:   githubPath,
-		ManifestPath: manifestPath,
-		GeneratedAt:  generatedAt,
-	}, nil
+	slackFile   *os.File
+	githubFile  *os.File
+	slackBuf    *bufio.Writer
+	githubBuf   *bufio.Writer
+	slackEnc    *json.Encoder
+	githubEnc   *json.Encoder
+	slackCount  int
+	githubCount int
 }
 
-func writeJSONL[T any](path string, values []T) error {
-	file, err := os.Create(path)
+func newMonthWriter(cfg Config, month MonthRange) (*MonthWriter, error) {
+	monthDir := filepath.Join(cfg.OutputDir, month.Label)
+	if err := os.MkdirAll(monthDir, 0o755); err != nil {
+		return nil, err
+	}
+
+	w := &MonthWriter{
+		cfg:          cfg,
+		month:        month,
+		monthDir:     monthDir,
+		slackPath:    monthOutputPaths(cfg, month).Slack,
+		githubPath:   monthOutputPaths(cfg, month).GitHub,
+		manifestPath: monthOutputPaths(cfg, month).Manifest,
+	}
+	if err := w.open(); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func monthOutputPaths(cfg Config, month MonthRange) FileSet {
+	monthDir := filepath.Join(cfg.OutputDir, month.Label)
+	return FileSet{
+		Slack:    filepath.Join(monthDir, "slack.jsonl"),
+		GitHub:   filepath.Join(monthDir, "github.jsonl"),
+		Manifest: filepath.Join(monthDir, "manifest.json"),
+	}
+}
+
+func monthOutputExists(cfg Config, month MonthRange) (bool, string, error) {
+	paths := monthOutputPaths(cfg, month)
+	for _, path := range []string{paths.Manifest, paths.Slack, paths.GitHub} {
+		if _, err := os.Stat(path); err == nil {
+			return true, path, nil
+		} else if !os.IsNotExist(err) {
+			return false, "", err
+		}
+	}
+	return false, "", nil
+}
+
+func (w *MonthWriter) open() error {
+	var err error
+	w.slackFile, err = os.Create(w.slackPath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	w.githubFile, err = os.Create(w.githubPath)
+	if err != nil {
+		_ = w.slackFile.Close()
+		return err
+	}
+	w.slackBuf = bufio.NewWriter(w.slackFile)
+	w.githubBuf = bufio.NewWriter(w.githubFile)
+	w.slackEnc = json.NewEncoder(w.slackBuf)
+	w.githubEnc = json.NewEncoder(w.githubBuf)
+	w.slackEnc.SetEscapeHTML(false)
+	w.githubEnc.SetEscapeHTML(false)
+	return nil
+}
 
-	writer := bufio.NewWriter(file)
-	encoder := json.NewEncoder(writer)
-	encoder.SetEscapeHTML(false)
-	for _, value := range values {
-		if err := encoder.Encode(value); err != nil {
-			return fmt.Errorf("encode %s: %w", path, err)
+func (w *MonthWriter) AppendSlack(record SlackConversationRecord) error {
+	if err := w.slackEnc.Encode(record); err != nil {
+		return fmt.Errorf("encode %s: %w", w.slackPath, err)
+	}
+	w.slackCount++
+	return w.slackBuf.Flush()
+}
+
+func (w *MonthWriter) AppendGitHub(record GitHubCommitRecord) error {
+	if err := w.githubEnc.Encode(record); err != nil {
+		return fmt.Errorf("encode %s: %w", w.githubPath, err)
+	}
+	w.githubCount++
+	return w.githubBuf.Flush()
+}
+
+func (w *MonthWriter) Close() error {
+	var firstErr error
+	if w.slackBuf != nil {
+		if err := w.slackBuf.Flush(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return writer.Flush()
+	if w.githubBuf != nil {
+		if err := w.githubBuf.Flush(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if w.slackFile != nil {
+		if err := w.slackFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if w.githubFile != nil {
+		if err := w.githubFile.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (w *MonthWriter) Finalize() (MonthResult, error) {
+	w.generatedAt = time.Now().UTC()
+	manifest := MonthManifest{
+		Month:              w.month.Label,
+		GeneratedAt:        w.generatedAt.Format(time.RFC3339),
+		OutputDir:          w.monthDir,
+		SlackRecordCount:   w.slackCount,
+		GitHubCommitCount:  w.githubCount,
+		Repos:              append([]string(nil), w.cfg.Repos...),
+		SlackUserHandle:    w.cfg.SlackUserHandle,
+		GitHubUserHandle:   w.cfg.GitHubUser,
+		ConfiguredTimeFrom: w.cfg.TimeFrom.Format(time.RFC3339),
+		ConfiguredTimeTo:   w.cfg.TimeTo.Format(time.RFC3339),
+		Files: FileSet{
+			Slack:    w.slackPath,
+			GitHub:   w.githubPath,
+			Manifest: w.manifestPath,
+		},
+	}
+	if err := writeJSONFile(w.manifestPath, manifest); err != nil {
+		return MonthResult{}, err
+	}
+	return MonthResult{
+		Month:        w.month.Label,
+		SlackCount:   w.slackCount,
+		GitHubCount:  w.githubCount,
+		SlackPath:    w.slackPath,
+		GitHubPath:   w.githubPath,
+		ManifestPath: w.manifestPath,
+		GeneratedAt:  w.generatedAt,
+	}, nil
 }
 
 func writeJSONFile(path string, value any) error {

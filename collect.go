@@ -48,19 +48,29 @@ func collectMonth(ctx context.Context, cfg Config, month MonthRange) (MonthResul
 }
 
 func collectMonthWithCollectors(ctx context.Context, cfg Config, month MonthRange, slackCollector *SlackCollector, githubCollector GitHubCollector) (MonthResult, error) {
-	slackRecords, err := slackCollector.CollectMonth(ctx, cfg, month)
+	writer, err := newMonthWriter(cfg, month)
+	if err != nil {
+		return MonthResult{}, err
+	}
+	defer writer.Close()
+
+	progress := NewProgressReporter(month, cfg)
+	progress.StartMonth()
+
+	_, err = slackCollector.StreamMonth(ctx, cfg, month, progress, writer.AppendSlack)
 	if err != nil {
 		return MonthResult{}, err
 	}
 
-	githubRecords, err := githubCollector.CollectMonth(ctx, cfg, month)
+	_, err = githubCollector.StreamMonth(ctx, cfg, month, progress, writer.AppendGitHub)
 	if err != nil {
 		return MonthResult{}, err
 	}
 
-	result, err := writeMonthOutput(cfg, month, slackRecords, githubRecords)
+	result, err := writer.Finalize()
 	if err != nil {
 		return MonthResult{}, fmt.Errorf("write output: %w", err)
 	}
+	logf("[%s] done %s", month.Label, progress.Summary())
 	return result, nil
 }

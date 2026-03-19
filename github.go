@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"sort"
 	"strings"
 	"time"
 )
@@ -60,15 +59,18 @@ func (g GitHubCollector) SmokeTest(ctx context.Context, cfg Config) (GitHubSmoke
 	return GitHubSmokeResult{RepoCount: len(cfg.Repos)}, nil
 }
 
-func (g GitHubCollector) CollectMonth(ctx context.Context, cfg Config, month MonthRange) ([]GitHubCommitRecord, error) {
+func (g GitHubCollector) StreamMonth(ctx context.Context, cfg Config, month MonthRange, progress *ProgressReporter, emit func(GitHubCommitRecord) error) (int, error) {
 	monthStart, monthEnd := clipMonth(month, cfg)
 	window := TimeWindow{From: monthStart.Format(time.RFC3339), To: monthEnd.Format(time.RFC3339)}
-	var records []GitHubCommitRecord
-	for _, repo := range cfg.Repos {
+	count := 0
+	progress.AddPlannedWork(len(cfg.Repos))
+	for i, repo := range cfg.Repos {
+		progress.StartGitHubRepo(i+1, len(cfg.Repos), repo)
 		commits, err := fetchRepoCommits(ctx, repo, cfg.GitHubUser, monthStart, monthEnd)
 		if err != nil {
-			return nil, err
+			return count, err
 		}
+		progress.AddPlannedWork(len(commits))
 		for _, commit := range commits {
 			record := GitHubCommitRecord{
 				Month:         month.Label,
@@ -87,17 +89,16 @@ func (g GitHubCollector) CollectMonth(ctx context.Context, cfg Config, month Mon
 			for _, parent := range commit.Parents {
 				record.Parents = append(record.Parents, parent.SHA)
 			}
-			records = append(records, record)
+			progress.GitHubCommit(record)
+			if err := emit(record); err != nil {
+				return count, err
+			}
+			count++
 		}
+		progress.doneWork()
+		progress.GitHubRepoDone(repo, len(commits))
 	}
-
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].Repo == records[j].Repo {
-			return records[i].CommittedAt < records[j].CommittedAt
-		}
-		return records[i].Repo < records[j].Repo
-	})
-	return records, nil
+	return count, nil
 }
 
 func fetchRepoCommits(ctx context.Context, repo, author string, since, until time.Time) ([]ghCommit, error) {

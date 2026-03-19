@@ -15,6 +15,7 @@ type Config struct {
 	SlackToken      string
 	SlackCookie     string
 	SlackUserHandle string
+	SlackUserID     string
 	GitHubUser      string
 	Repos           []string
 	TimeFrom        time.Time
@@ -31,6 +32,7 @@ func loadConfig(envFile string) (Config, error) {
 	cfg.SlackToken = strings.TrimSpace(os.Getenv("SLACK_TOKEN"))
 	cfg.SlackCookie = strings.TrimSpace(os.Getenv("SLACK_COOKIE"))
 	cfg.SlackUserHandle = normalizeHandle(os.Getenv("SLACK_USER_HANDLE"))
+	cfg.SlackUserID = strings.TrimSpace(os.Getenv("SLACK_USER_ID"))
 	cfg.GitHubUser = normalizeHandle(os.Getenv("GITHUB_USER_HANDLE"))
 
 	repos, err := parseCSVList(os.Getenv("REPOS"))
@@ -66,12 +68,14 @@ func loadConfig(envFile string) (Config, error) {
 	missing := missingFields(map[string]string{
 		"SLACK_TOKEN":        cfg.SlackToken,
 		"SLACK_COOKIE":       cfg.SlackCookie,
-		"SLACK_USER_HANDLE":  cfg.SlackUserHandle,
 		"GITHUB_USER_HANDLE": cfg.GitHubUser,
 		"TIME_FROM":          os.Getenv("TIME_FROM"),
 		"TIME_TO":            os.Getenv("TIME_TO"),
 		"REPOS":              os.Getenv("REPOS"),
 	})
+	if cfg.SlackUserHandle == "" && cfg.SlackUserID == "" {
+		missing = append(missing, "SLACK_USER_HANDLE or SLACK_USER_ID")
+	}
 	if len(missing) > 0 {
 		return Config{}, fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
 	}

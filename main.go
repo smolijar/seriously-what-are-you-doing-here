@@ -5,12 +5,15 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -27,6 +30,8 @@ func run(ctx context.Context, args []string) error {
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
+	case "auth-env":
+		return runAuthEnv(ctx, args[1:])
 	case "smoke-test":
 		return runSmokeTest(ctx, args[1:])
 	case "preview":
@@ -60,11 +65,32 @@ func runSmokeTest(ctx context.Context, args []string) error {
 	return nil
 }
 
+func runAuthEnv(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("auth-env", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	workspace := fs.String("workspace", "", "Slack workspace name or URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*workspace) == "" {
+		return errors.New("auth-env requires --workspace <workspace-name-or-url>")
+	}
+
+	result, err := getSlackAuthEnv(ctx, *workspace)
+	if err != nil {
+		return err
+	}
+
+	printSlackAuthEnv(result)
+	return nil
+}
+
 func runPreview(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("preview", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	envFile := fs.String("env-file", "", "path to env file")
 	monthValue := fs.String("month", "", "month to preview in YYYY-MM")
+	force := fs.Bool("force", false, "overwrite existing month output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -84,6 +110,12 @@ func runPreview(ctx context.Context, args []string) error {
 	if !month.End.After(cfg.TimeFrom) || !month.Start.Before(cfg.TimeTo) {
 		return fmt.Errorf("month %s is outside configured range %s to %s", month.Label, cfg.TimeFrom.Format(time.DateOnly), cfg.TimeTo.Format(time.DateOnly))
 	}
+	if exists, path, err := monthOutputExists(cfg, month); err != nil {
+		return err
+	} else if exists && !*force {
+		logf("[%s] skipping existing output at %s (use --force to overwrite)", month.Label, path)
+		return nil
+	}
 
 	result, err := collectMonth(ctx, cfg, month)
 	if err != nil {
@@ -98,6 +130,7 @@ func runFull(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	envFile := fs.String("env-file", "", "path to env file")
+	force := fs.Bool("force", false, "overwrite existing month output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -119,6 +152,12 @@ func runFull(ctx context.Context, args []string) error {
 	githubCollector := GitHubCollector{}
 
 	for _, month := range months {
+		if exists, path, err := monthOutputExists(cfg, month); err != nil {
+			return err
+		} else if exists && !*force {
+			logf("[%s] skipping existing output at %s (use --force to overwrite)", month.Label, path)
+			continue
+		}
 		result, err := collectMonthWithCollectors(ctx, cfg, month, slackCollector, githubCollector)
 		if err != nil {
 			return fmt.Errorf("collect %s: %w", month.Label, err)
@@ -135,9 +174,10 @@ func printUsage() {
 Seriously What Are you Doing Here
 
 Usage:
+  swaydh auth-env --workspace my-workspace
   swaydh smoke-test [--env-file .env]
-  swaydh preview --month YYYY-MM [--env-file .env]
-  swaydh run [--env-file .env]
+  swaydh preview --month YYYY-MM [--env-file .env] [--force]
+  swaydh run [--env-file .env] [--force]
 
 The tool reads all configuration from environment variables or an optional env file.
 See .env.example and README.md for setup instructions.
