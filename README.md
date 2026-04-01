@@ -1,84 +1,67 @@
-# swaydh
+<div align="center">
 
-swaydh stands for Seriously What Are you Doing Here.
+# swaydh (Seriously, What Are You Doing Here?)
 
-This tool collects month-by-month Slack and GitHub activity for a specific person.
+![](https://i.imgflip.com/anxrs1.gif)
 
-Slack collection uses a search-first approach: it searches for authored messages and explicit mentions in the requested month, then fetches exact matched messages and full threads only for those hits.
+</div>
 
-It reads all configuration from environment variables, can smoke-test access to Slack and GitHub, can preview a single month, and can run across the full configured time range.
+Tiny CLI data aggregator for Slack + GitHub for user's footprint.
 
-## What it collects
+If I were to use this, I would probably do that to gather inputs I could later process to find mentionworthy items to a CV, to create a backed dataset for Gergely Orosz's inspired items. Then maybe process the results with something like described in Achievement bank. I would create the bank on monthly/quarterly bases based on the total evaluated period lenght, as it might yield better results.
 
-- Slack messages authored by the target user
-- Slack messages that explicitly mention the target user as `<@USERID>`
-- Whole Slack threads when a matched message belongs to a thread
-- GitHub commits for the target GitHub handle across the configured repo list
+## What it could maybe pull, allegedly
 
-Outputs are written per month:
+- Slack messages written by the target human
+- Slack messages that explicitly ping them as `<@USERID>`
+- Whole Slack threads when one of those messages lives in a thread
+- GitHub commits for the configured GitHub handle across the configured repos
+
+It writes stuff to:
 
 - `OUTPUT_DIR/YYYY-MM/slack.jsonl`
 - `OUTPUT_DIR/YYYY-MM/github.jsonl`
 - `OUTPUT_DIR/YYYY-MM/manifest.json`
 
-The JSONL files are appended during processing, so partial results are preserved while a month is still running.
+## Needs
 
-## Requirements
+- Go `1.25+`
+- `gh` installed and logged in
+- Slack token + cookie in env
 
-- Go 1.25+
-- `gh` installed and authenticated
-- Slack web token and cookie values available in env
+## Setup speedrun
 
-## Setup
-
-### 1. Authenticate GitHub CLI
-
-Install `gh`, then log in:
+### 1. GitHub auth
 
 ```bash
 gh auth login
 gh auth status
 ```
 
-### 2. Get Slack credentials
+### 2. Slack auth
 
-The tool uses the `slackdump` Go library with runtime env credentials.
-
-You can have `swaydh` open a browser and print the env exports for you:
+Fast path:
 
 ```bash
 ./swaydh auth-env --workspace your-workspace
 ```
 
-That follows the same browser-based login style described by `slackdump`: complete the login flow in the browser, then copy the printed `export` lines into your shell or `.env` file.
-
-Expected output looks like:
+That opens the browser dance and spits out exports like:
 
 ```bash
-# swaydh Slack auth env for your-workspace
 export SLACK_TOKEN="xoxc-..."
 export SLACK_COOKIE="xoxd-..."
 ```
 
-Get the values from an authenticated Slack browser session:
-
-1. Open your Slack workspace in a browser.
-2. Open browser developer tools.
-3. In the console, run:
+If you insist on raw gremlin mode, get them from an authenticated Slack browser session:
 
 ```javascript
 JSON.parse(localStorage.localConfig_v2).teams[document.location.pathname.match(/^\/client\/([A-Z0-9]+)/)[1]].token
 ```
 
-4. Copy the returned `xoxc-...` token into `SLACK_TOKEN`.
-5. In browser storage/cookies, find the Slack cookie named `d`.
-6. Copy its value into `SLACK_COOKIE`.
+Then grab cookie `d` and put it in `SLACK_COOKIE`.
 
-Slack workspaces may trigger security alerts for automated access. Make sure your usage complies with your organization's policies.
-
-### 3. Create your env file
-
-Copy the example file and fill in your values:
+### 3. Env file
 
 ```bash
 cp .env.example .env
@@ -98,9 +81,7 @@ TIME_TO=2026-04-01
 OUTPUT_DIR=out
 ```
 
-`SLACK_USER_ID` is optional but recommended. If omitted, swaydh resolves it from `SLACK_USER_HANDLE` before running searches.
-
-You can also export everything directly in your shell instead of using `.env`.
+`SLACK_USER_ID` is optional, but giving it saves the tool from having to go look it up.
 
 ## Build
 
@@ -108,155 +89,78 @@ You can also export everything directly in your shell instead of using `.env`.
 go build -o swaydh .
 ```
 
-## User manual
+## Commands
 
-If `.env` exists in the project root, every command loads it automatically. You can override that with `--env-file /path/to/file.env`.
+If `.env` exists in the repo root, commands load it automatically. Use `--env-file` if you want to be fancy.
 
-### 1. Set env
+### Smoke test
 
-Create `.env` from the example and fill in your Slack, GitHub, repo, and date range values:
-
-```bash
-cp .env.example .env
-```
-
-At minimum you need:
-
-- `SLACK_TOKEN`
-- `SLACK_COOKIE`
-- `SLACK_USER_HANDLE` or `SLACK_USER_ID`
-- `GITHUB_USER_HANDLE`
-- `REPOS`
-- `TIME_FROM`
-- `TIME_TO`
-
-### 2. Run Slack login helper
-
-Use the helper when you need fresh Slack auth values:
-
-```bash
-./swaydh auth-env --workspace your-workspace
-```
-
-What to expect:
-
-- a browser-based Slack login flow opens
-- after login, `swaydh` prints `export` lines for `SLACK_TOKEN` and `SLACK_COOKIE`
-- copy those values into your shell session or `.env`
-
-### 3. Smoke test access
-
-Before collecting data, verify both integrations:
+Checks whether this whole scheme could theoretically work before you waste your afternoon.
 
 ```bash
 ./swaydh smoke-test
 ```
 
-Expected output looks like:
-
-```text
-Slack OK: workspace=https://your-workspace.slack.com user_id=U0123456789 channels=123 users=456
-GitHub OK: repos=2
-```
-
-This confirms:
-
-- `gh` is installed and authenticated
-- each configured repo is reachable via GitHub CLI
-- the Slack token/cookie work
-- the target Slack user resolves correctly
-- the authenticated Slack account can see conversations
-
-### 4. Preview one month
-
-Run one month first before doing a full range:
+### Preview one month
 
 ```bash
 ./swaydh preview --month 2026-02
 ```
 
-What to expect:
-
-- progress logs while Slack and GitHub collection run
-- a final summary like:
-
-```text
-2026-02: slack=14 github=6
-  slack: /absolute/path/to/out/2026-02/slack.jsonl
-  github: /absolute/path/to/out/2026-02/github.jsonl
-  manifest: /absolute/path/to/out/2026-02/manifest.json
-```
-
-If output for that month already exists, `swaydh` skips it unless you force a rerun.
-
-### 5. Re-run a preview month with force
-
-Use `--force` to overwrite an existing month directory's output files:
+Re-run and overwrite that month:
 
 ```bash
 ./swaydh preview --month 2026-02 --force
 ```
 
-This is useful when you changed env values, widened the time range, or want to regenerate a month after a partial run.
-
-### 6. Run the full configured range
-
-Once preview looks right, run the full range:
+### Run the whole range
 
 ```bash
 ./swaydh run
 ```
 
-To overwrite already-generated months:
+Overwrite already-generated months:
 
 ```bash
 ./swaydh run --force
 ```
 
-To use a non-default env file:
+Use a different env file:
 
 ```bash
 ./swaydh run --env-file /path/to/file.env
 ```
 
-What to expect:
-
-- one summary block per month in the configured range
-- months with existing output are skipped unless `--force` is set
-- output files are written under `OUTPUT_DIR/YYYY-MM/`
-
-### 7. Recommended smoke-to-run workflow
-
-For a new setup or credential refresh, use this sequence:
+## Basically the workflow
 
 ```bash
 go build -o swaydh .
 ./swaydh auth-env --workspace your-workspace
 ./swaydh smoke-test
 ./swaydh preview --month 2026-02
-./swaydh preview --month 2026-02 --force
 ./swaydh run
 ```
 
-The second preview command is only needed when you intentionally want to regenerate the same month.
+## Achievement bank
 
-## Output format
+After the monthly output exists, you can feed it into the achievement-bank thing:
 
-`slack.jsonl` contains one JSON object per matched conversation unit:
+- `docs/achievement-bank-manual.md`
+- `docs/achievement-bank-prompt.md`
 
-- single message for non-thread matches
-- full thread for thread matches
+That step is for generating a reusable achievement bank, not a resume, not a monthly diary, not LinkedIn fanfic.
 
-Each record includes the month, channel metadata, match type, matched message timestamp, source window, and compact message payloads.
+## Output
 
-`github.jsonl` contains one JSON object per commit with repo, SHA, author details, commit message, URL, parent SHAs, and source window.
+- `slack.jsonl`: one JSON object per matched conversation unit
+- `github.jsonl`: one JSON object per commit
+- `manifest.json`: metadata about that month's run
 
-`manifest.json` contains run metadata and output file paths for that month.
+## Note
 
-## Notes
-
-- Slack mentions are explicit Slack mentions only, not plain-text name references.
-- Slack results only cover channels, private channels, DMs, and group DMs visible to the authenticated Slack account.
-- Free Slack workspaces may not return data older than 90 days.
-- `TIME_TO` is treated as the exclusive upper bound.
-- `preview --month YYYY-MM` must fall within the configured `TIME_FROM` / `TIME_TO` window.
+- Slack mentions means real Slack mentions, not plain text name-dropping
+- Results only cover conversations visible to the authenticated Slack account
+- Free Slack may refuse to cough up stuff older than 90 days
+- `TIME_TO` is exclusive
+- `preview --month YYYY-MM` has to fall inside `TIME_FROM` and `TIME_TO`
+- If your org hates automated Slack access, maybe do not become the main character
